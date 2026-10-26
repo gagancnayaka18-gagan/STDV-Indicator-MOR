@@ -1,0 +1,177 @@
+
+ //@version=6
+indicator("Midnight OR - Auto STDV Zones", overlay=true,
+     max_lines_count=20, max_boxes_count=10)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 1. TIMEZONE SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+tzMode = input.string("New York (Auto DST)", "Timezone Mode",
+     options=["New York (Auto DST)", "GMT-4 (Fixed)", "GMT-5 (Fixed)"],
+     group="Time Settings")
+
+string tz = tzMode == "New York (Auto DST)" ? "America/New_York" :
+     tzMode == "GMT-4 (Fixed)" ? "GMT-4" : "GMT-5"
+
+orSession = input.session("0000-0030:1234567",
+     "Midnight Opening Range", group="Time Settings")
+
+showOnlyToday = input.bool(true, "Show Only Current Day (Erase Previous)",
+     group="Display")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 2. VISUAL SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+upperFill = input.color(color.new(color.red, 85), "Upper Zone Fill",
+     group="Style")
+lowerFill = input.color(color.new(color.green, 85), "Lower Zone Fill",
+     group="Style")
+borderCol = input.color(color.black, "Zone Border",
+     group="Style")
+baseCol = input.color(color.black, "Opening Range High/Low",
+     group="Style")
+midCol = input.color(color.black, "Zone Midpoint",
+     group="Style")
+
+extendHours = input.int(24, "Extend Zones (Hours)",
+     minval=1, maxval=48, group="Style")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 3. ONE-MINUTE DATA FOR ALL CHART TIMEFRAMES
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[times, highs, lows, inSessions] = request.security_lower_tf(
+     syminfo.tickerid, "1",
+     [time, high, low, not na(time("1", orSession, tz))])
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 4. DRAWING STORAGE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var box[] fibBoxes = array.new_box()
+var line[] fibLines = array.new_line()
+
+var int activeDay = na
+var int drawnDay = na
+var float sHigh = na
+var float sLow = na
+var int rangeStart = na
+var int rangeEnd = na
+var bool sawSession = false
+var bool drawnToday = false
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 5. PROCESS INTRABARS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if array.size(times) > 0
+    for i = 0 to array.size(times) - 1
+        int t = array.get(times, i)
+        float h = array.get(highs, i)
+        float l = array.get(lows, i)
+        bool inSess = array.get(inSessions, i)
+
+        int dayKey = year(t, tz) * 10000 +
+             month(t, tz) * 100 + dayofmonth(t, tz)
+
+        // Reset at the beginning of each New York calendar day.
+        if na(activeDay) or dayKey != activeDay
+            if showOnlyToday
+                while array.size(fibBoxes) > 0
+                    box.delete(array.pop(fibBoxes))
+                while array.size(fibLines) > 0
+                    line.delete(array.pop(fibLines))
+
+            activeDay := dayKey
+            drawnDay := na
+            sHigh := na
+            sLow := na
+            rangeStart := na
+            rangeEnd := na
+            sawSession := false
+            drawnToday := false
+
+        // Capture the 00:00–00:30 New York range.
+        if inSess
+            sHigh := na(sHigh) ? h : math.max(sHigh, h)
+            sLow := na(sLow) ? l : math.min(sLow, l)
+            rangeStart := na(rangeStart) ? t : rangeStart
+            rangeEnd := t + 60 * 1000
+            sawSession := true
+
+        // Draw only after the opening range has finished.
+        if sawSession and not inSess and not drawnToday and
+             not na(sHigh) and not na(sLow) and sHigh > sLow
+
+            drawnToday := true
+            drawnDay := activeDay
+
+            float r = sHigh - sLow
+
+            // Upper extensions: measured upward from range high.
+            float top_2_00 = sHigh + r * 2.0
+            float top_2_25 = sHigh + r * 2.25
+            float top_2_50 = sHigh + r * 2.5
+
+            float top_4_00 = sHigh + r * 4.0
+            float top_4_25 = sHigh + r * 4.25
+            float top_4_50 = sHigh + r * 4.5
+
+            // Lower extensions: measured downward from range low.
+            float bot_2_00 = sLow - r * 2.0
+            float bot_2_25 = sLow - r * 2.25
+            float bot_2_50 = sLow - r * 2.5
+
+            float bot_4_00 = sLow - r * 4.0
+            float bot_4_25 = sLow - r * 4.25
+            float bot_4_50 = sLow - r * 4.5
+
+            int t1 = rangeEnd
+            int t2 = timestamp(tz, year(t, tz),
+                 month(t, tz), dayofmonth(t, tz), 23, 59, 0)
+
+            // Base opening range high and low.
+            array.push(fibLines, line.new(
+                 t1, sHigh, t2, sHigh, xloc=xloc.bar_time,
+                 color=baseCol, style=line.style_dashed, width=1))
+
+            array.push(fibLines, line.new(
+                 t1, sLow, t2, sLow, xloc=xloc.bar_time,
+                 color=baseCol, style=line.style_dashed, width=1))
+
+            // Upper Zone 1: +2.0 to +2.5.
+            array.push(fibBoxes, box.new(
+                 t1, top_2_50, t2, top_2_00,
+                 xloc=xloc.bar_time, border_color=borderCol,
+                 bgcolor=upperFill))
+
+            array.push(fibLines, line.new(
+                 t1, top_2_25, t2, top_2_25,
+                 xloc=xloc.bar_time, color=midCol, width=1))
+
+            // Upper Zone 2: +4.0 to +4.5.
+            array.push(fibBoxes, box.new(
+                 t1, top_4_50, t2, top_4_00,
+                 xloc=xloc.bar_time, border_color=borderCol,
+                 bgcolor=upperFill))
+
+            array.push(fibLines, line.new(
+                 t1, top_4_25, t2, top_4_25,
+                 xloc=xloc.bar_time, color=midCol, width=1))
+
+            // Lower Zone 1: -2.0 to -2.5.
+            array.push(fibBoxes, box.new(
+                 t1, bot_2_00, t2, bot_2_50,
+                 xloc=xloc.bar_time, border_color=borderCol,
+                 bgcolor=lowerFill))
+
+            array.push(fibLines, line.new(
+                 t1, bot_2_25, t2, bot_2_25,
+                 xloc=xloc.bar_time, color=midCol, width=1))
+
+            // Lower Zone 2: -4.0 to -4.5.
+            array.push(fibBoxes, box.new(
+                 t1, bot_4_00, t2, bot_4_50,
+                 xloc=xloc.bar_time, border_color=borderCol,
+                 bgcolor=lowerFill))
+
+            array.push(fibLines, line.new(
+                 t1, bot_4_25, t2, bot_4_25,
+                 xloc=xloc.bar_time, color=midCol, width=1))
